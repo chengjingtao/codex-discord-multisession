@@ -29,6 +29,9 @@ export type ResolvedStartOptions = {
   model?: string
   proxy?: string
   debug?: boolean
+  engine: 'exec' | 'app-server'
+  appServerPort: number
+  appServerTokenEnv?: string
 }
 
 type ResolveStartOptionsArgs = {
@@ -187,5 +190,8 @@ export async function resolveStartOptions(args: ResolveStartOptionsArgs = {}): P
     model,
     proxy,
     debug: cliOpts.debug || process.env.CODEX_DISCORD_PROXY_DEBUG === '1',
+    engine: defaults.engine,
+    appServerPort: defaults.appServerPort,
+    appServerTokenEnv: defaults.appServerTokenEnv,
   }
 }

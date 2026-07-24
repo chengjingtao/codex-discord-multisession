@@ -21,6 +21,12 @@ export type DiscordDaemonOptions = {
   proxy?: string
   debug?: boolean
   runCodex: typeof import('./codex-runner.js').runCodex
+  /**
+   * When set (app-server engine), returns the terminal command that attaches a
+   * TUI to the SAME live Codex thread over `codex --remote`. Undefined in exec
+   * mode, where handoff is the local `cd … && codex resume <id>` form.
+   */
+  remoteAttachCommand?: (codexThreadId: string) => string
 }
 
 type DiscordMessage = {
@@ -1108,6 +1114,14 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
         await sendMessage(discordThreadId, 'No Codex session is bound to this thread yet.')
         return true
       }
+      if (opts.remoteAttachCommand) {
+        const cmd = opts.remoteAttachCommand(binding.codexThreadId)
+        await sendMessage(
+          discordThreadId,
+          `Terminal attach (same live session — speak from either side):\n\n\`\`\`sh\n${cmd}\n\`\`\``,
+        )
+        return true
+      }
       const cmd = `cd ${shellQuote(binding.cwd)} && ${opts.codexBin} resume ${binding.codexThreadId}`
       await sendMessage(
         discordThreadId,
@@ -1231,6 +1245,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
           ...askMcpConfigOptions(),
         ],
         codexOptions: opts.model ? ['--model', opts.model] : [],
+        sandbox: opts.sandbox,
         env,
         signal: active.abort.signal,
         onEvent: event => {
@@ -1249,6 +1264,12 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
       managedThreads.add(discordThreadId)
       await editMessage(discordThreadId, workingId, `Codex session: ${result.codexThreadId}\nCompleted in ${elapsedSeconds(active.startedAt)}s.`)
       await sendChunks(discordThreadId, result.finalText)
+      if (opts.remoteAttachCommand && !binding) {
+        await sendMessage(
+          discordThreadId,
+          `Terminal attach (same live session — speak from either side):\n\`\`\`sh\n${opts.remoteAttachCommand(result.codexThreadId)}\n\`\`\``,
+        ).catch(() => {})
+      }
     } catch (err) {
       if (err instanceof CodexRunInterruptedError || active.stopRequested) {
         const finalStatus = `Codex interrupted after ${elapsedSeconds(active.startedAt)}s.${active.stopRequestedAt ? ` Stop completed in ${elapsedSeconds(active.stopRequestedAt)}s after interrupt request.` : ''}`
