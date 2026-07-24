@@ -9,6 +9,7 @@ export type CodexRunOptions = {
   codexGlobalOptions?: string[]
   codexOptions?: string[]
   imagePaths?: string[]
+  sandbox?: string
   env?: Record<string, string>
   signal?: AbortSignal
   onEvent?: (event: unknown) => void | Promise<void>

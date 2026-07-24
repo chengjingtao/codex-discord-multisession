@@ -43,6 +43,10 @@ export class AppServerClient {
 
   notify(method: string, params: any): void { this.send({ method, params }) }
   onNotification(fn: (method: string, params: any) => void): void { this.notifyHandlers.push(fn) }
+  offNotification(fn: (method: string, params: any) => void): void {
+    const i = this.notifyHandlers.indexOf(fn)
+    if (i >= 0) this.notifyHandlers.splice(i, 1)
+  }
   onServerRequest(fn: ServerRequestHandler): void { this.serverRequestHandler = fn }
   close(): void { try { this.ws?.close() } catch {} }
 
