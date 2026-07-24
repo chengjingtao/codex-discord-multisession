@@ -32,6 +32,7 @@ export type ResolvedStartOptions = {
   engine: 'exec' | 'app-server'
   appServerPort: number
   appServerTokenEnv?: string
+  allowBotAuthorIds?: string[]
 }
 
 type ResolveStartOptionsArgs = {
@@ -136,6 +137,7 @@ export async function resolveStartOptions(args: ResolveStartOptionsArgs = {}): P
   let sandbox = defaults.sandbox
   let codexBin = defaults.codexBin
   let stateDir = defaults.stateDir
+  const allowBotAuthorIds = defaults.allowBotAuthorIds
   let token = process.env.DISCORD_BOT_TOKEN ?? ''
   let saveNonSecret = false
 
@@ -193,5 +195,6 @@ export async function resolveStartOptions(args: ResolveStartOptionsArgs = {}): P
     engine: defaults.engine,
     appServerPort: defaults.appServerPort,
     appServerTokenEnv: defaults.appServerTokenEnv,
+    allowBotAuthorIds,
   }
 }
