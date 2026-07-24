@@ -11,6 +11,9 @@ export type BridgeConfig = {
   model?: string
   stateDir?: string
   tokenSource?: 'env'
+  engine?: 'exec' | 'app-server'
+  appServerPort?: number
+  appServerTokenEnv?: string
 }
 
 export function defaultStateDir(): string {
@@ -45,7 +48,7 @@ export async function saveConfig(config: BridgeConfig, file = process.env.CODEX_
   await rename(tmp, file)
 }
 
-export function resolveRuntimeConfig(config: BridgeConfig): Required<Pick<BridgeConfig, 'parentChannelId' | 'workdir' | 'codexBin' | 'sandbox' | 'stateDir'>> & BridgeConfig {
+export function resolveRuntimeConfig(config: BridgeConfig): Required<Pick<BridgeConfig, 'parentChannelId' | 'workdir' | 'codexBin' | 'sandbox' | 'stateDir' | 'engine' | 'appServerPort'>> & BridgeConfig {
   const stateDir = process.env.CODEX_DISCORD_STATE_DIR ?? config.stateDir ?? defaultStateDir()
   return {
     ...config,
@@ -56,5 +59,8 @@ export function resolveRuntimeConfig(config: BridgeConfig): Required<Pick<Bridge
     sandbox: process.env.CODEX_SANDBOX ?? process.env.CODEX_DISCORD_SANDBOX ?? config.sandbox ?? defaultCodexSandbox(),
     model: process.env.CODEX_MODEL ?? config.model,
     stateDir,
+    engine: (process.env.CODEX_ENGINE as 'exec' | 'app-server' | undefined) ?? config.engine ?? 'exec',
+    appServerPort: Number(process.env.CODEX_DISCORD_APP_SERVER_PORT ?? config.appServerPort ?? 0) || 0,
+    appServerTokenEnv: process.env.CODEX_DISCORD_APP_SERVER_TOKEN_ENV ?? config.appServerTokenEnv,
   }
 }
