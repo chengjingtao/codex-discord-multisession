@@ -788,6 +788,24 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
       .slice(0, 90) || 'codex-session'
   }
 
+  // Parse an optional leading `--cwd <path>` / `--name <thread-name>` off a
+  // `!codex` payload so a fresh session can pick its workdir and thread name.
+  // Flag values may be quoted. Everything after the flags is the Codex prompt.
+  function parseCodexInvocation(raw: string): { cwd?: string; name?: string; prompt: string } {
+    let rest = raw.trim()
+    let cwd: string | undefined
+    let name: string | undefined
+    for (;;) {
+      const m = /^(--cwd|--name)\s+("[^"]+"|'[^']+'|\S+)\s*/.exec(rest)
+      if (!m) break
+      const value = m[2].replace(/^["']|["']$/g, '')
+      if (m[1] === '--cwd') cwd = value
+      else name = value
+      rest = rest.slice(m[0].length)
+    }
+    return { cwd, name, prompt: rest }
+  }
+
   function shellQuote(s: string): string {
     return `'${s.replace(/'/g, `'\\''`)}'`
   }
@@ -1202,7 +1220,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
     return false
   }
 
-  async function runCodexForThread(discordThreadId: string, prompt: string, fromQueue = false): Promise<void> {
+  async function runCodexForThread(discordThreadId: string, prompt: string, fromQueue = false, cwdOverride?: string): Promise<void> {
     const existing = activeRuns.get(discordThreadId)
     if (existing) {
       await sendMessage(
@@ -1245,7 +1263,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
         }
         : undefined
       const result = await opts.runCodex({
-        cwd: binding?.cwd ?? opts.workdir,
+        cwd: binding?.cwd ?? cwdOverride ?? opts.workdir,
         codexThreadId: binding?.codexThreadId,
         codexBin: opts.codexBin,
         codexGlobalOptions: [
@@ -1265,7 +1283,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
       await upsertBinding(bindingsFile, discordThreadId, {
         codexThreadId: result.codexThreadId,
         codexHome: bindingCodexHome,
-        cwd: binding?.cwd ?? opts.workdir,
+        cwd: binding?.cwd ?? cwdOverride ?? opts.workdir,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       })
@@ -1348,12 +1366,19 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
         return
       }
 
-      const prompt = payloadAfterCommand(content, '!codex') ?? ''
+      const invocation = payloadAfterCommand(content, '!codex') ?? ''
+      if (!invocation) return
+      const { cwd: cwdArg, name: nameArg, prompt } = parseCodexInvocation(invocation)
       if (!prompt) return
-      const threadId = await createThread(opts.parentChannelId, threadNameFromPrompt(prompt))
+      const cwdOverride = cwdArg ? normalizeWorkdir(cwdArg) : undefined
+      if (cwdOverride && !existsSync(cwdOverride)) {
+        await sendMessage(opts.parentChannelId, `Cannot start Codex: workdir does not exist: ${cwdOverride}`)
+        return
+      }
+      const threadId = await createThread(opts.parentChannelId, threadNameFromPrompt(nameArg ?? prompt))
       managedThreads.add(threadId)
-      await sendMessage(threadId, `Starting Codex session for:\n${prompt}`)
-      await runCodexForThread(threadId, prompt)
+      await sendMessage(threadId, `Starting Codex session for:\n${prompt}${cwdOverride ? `\n(workdir: ${cwdOverride})` : ''}`)
+      await runCodexForThread(threadId, prompt, false, cwdOverride)
       return
     }
 
