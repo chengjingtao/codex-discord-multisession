@@ -29,6 +29,7 @@ export type ResolvedStartOptions = {
   model?: string
   proxy?: string
   debug?: boolean
+  allowBotAuthorIds?: string[]
 }
 
 type ResolveStartOptionsArgs = {
@@ -133,6 +134,7 @@ export async function resolveStartOptions(args: ResolveStartOptionsArgs = {}): P
   let sandbox = defaults.sandbox
   let codexBin = defaults.codexBin
   let stateDir = defaults.stateDir
+  const allowBotAuthorIds = defaults.allowBotAuthorIds
   let token = process.env.DISCORD_BOT_TOKEN ?? ''
   let saveNonSecret = false
 
@@ -187,5 +189,6 @@ export async function resolveStartOptions(args: ResolveStartOptionsArgs = {}): P
     model,
     proxy,
     debug: cliOpts.debug || process.env.CODEX_DISCORD_PROXY_DEBUG === '1',
+    allowBotAuthorIds,
   }
 }

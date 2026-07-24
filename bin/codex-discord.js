@@ -153,6 +153,7 @@ async function start(configFile, cliOpts) {
     model: config.model,
     proxy: config.proxy,
     debug: config.debug,
+    allowBotAuthorIds: config.allowBotAuthorIds,
     runCodex,
   })
 }

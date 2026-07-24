@@ -20,6 +20,13 @@ export type DiscordDaemonOptions = {
   model?: string
   proxy?: string
   debug?: boolean
+  /**
+   * Discord user IDs of *bot* accounts that are allowed to trigger commands
+   * (e.g. `!codex`, `!sessions`). Messages from bots are ignored by default to
+   * avoid feedback loops; listing a bot's ID here lets a trusted external bot
+   * drive the bridge. The daemon's own bot account is never added implicitly.
+   */
+  allowBotAuthorIds?: string[]
   runCodex: typeof import('./codex-runner.js').runCodex
 }
 
@@ -787,6 +794,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
     console.error(`  workdir:        ${opts.workdir}`)
     console.error(`  codex binary:   ${opts.codexBin}`)
     console.error(`  sandbox:        ${opts.sandbox}`)
+    if (opts.allowBotAuthorIds?.length) console.error(`  allow bot ids:  ${opts.allowBotAuthorIds.join(', ')}`)
     if (opts.model) console.error(`  model:          ${opts.model}`)
     console.error(`  state dir:      ${opts.stateDir}`)
     console.error(`  session homes:  ${codexSessionHomes().map(shortPath).join(', ')}`)
@@ -1269,7 +1277,10 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
   }
 
   async function handleMessage(msg: DiscordMessage): Promise<void> {
-    if (msg.author.bot) return
+    // Ignore messages from bots to prevent feedback loops, EXCEPT bot accounts
+    // explicitly allow-listed via `allowBotAuthorIds`. This lets a trusted
+    // external bridge (e.g. a Claude Discord session) trigger `!codex`.
+    if (msg.author.bot && !(opts.allowBotAuthorIds ?? []).includes(msg.author.id)) return
 
     if (msg.channel_id === opts.parentChannelId) {
       const content = msg.content.trim()
