@@ -90,7 +90,13 @@ type ActiveRun = {
   stopFollowupTimer?: NodeJS.Timeout
   renderChain: Promise<void>
   renderedAgentMessage?: boolean
+  /** Buffered command-execution subtext lines, flushed as one message every few seconds. */
+  cmdBatch: string[]
+  cmdBatchTimer?: NodeJS.Timeout
 }
+
+/** How long command-execution lines accumulate before being flushed as one message. */
+const CMD_BATCH_MS = 5000
 
 type QueuedPrompt = {
   prompt: string
@@ -370,7 +376,34 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
   // executions as colored embeds, reasoning as a collapsed spoiler, agent
   // prose as a clean markdown message. Returns true if an agent message was
   // rendered (so the completion path can skip the duplicate finalText).
-  async function renderCodexEvent(discordThreadId: string, event: unknown): Promise<boolean> {
+  // Flush buffered command-execution lines as a single (rate-limit-friendly)
+  // message, chunked so each stays under Discord's 2000-char limit.
+  async function flushCmdBatch(run: ActiveRun): Promise<void> {
+    if (run.cmdBatchTimer) { clearTimeout(run.cmdBatchTimer); run.cmdBatchTimer = undefined }
+    if (run.cmdBatch.length === 0) return
+    const lines = run.cmdBatch.splice(0)
+    let buf = ''
+    for (const line of lines) {
+      if (buf && buf.length + line.length + 1 > 1900) {
+        await sendMessage(run.discordThreadId, buf).catch(() => {})
+        buf = ''
+      }
+      buf = buf ? `${buf}\n${line}` : line
+    }
+    if (buf) await sendMessage(run.discordThreadId, buf).catch(() => {})
+  }
+
+  // Arm a single-shot timer that flushes the command batch through the render
+  // chain (keeping it serialized with other messages) after CMD_BATCH_MS.
+  function armCmdFlush(run: ActiveRun): void {
+    if (run.cmdBatchTimer) return
+    run.cmdBatchTimer = setTimeout(() => {
+      run.cmdBatchTimer = undefined
+      run.renderChain = run.renderChain.then(() => flushCmdBatch(run)).catch(() => {})
+    }, CMD_BATCH_MS)
+  }
+
+  async function renderCodexEvent(run: ActiveRun, event: unknown): Promise<boolean> {
     if (!event || typeof event !== 'object') return false
     const ev = event as Record<string, unknown>
     if (ev.type !== 'item.completed') return false
@@ -378,23 +411,29 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
     if (!item) return false
 
     if (item.type === 'command_execution') {
-      await sendMessage(discordThreadId, commandLine({
+      // Buffer command lines and flush them in batches — a fast turn emits many
+      // tiny commands, and one message per command floods the thread.
+      run.cmdBatch.push(commandLine({
         command: typeof item.command === 'string' ? item.command : '',
         exit_code: typeof item.exit_code === 'number' ? item.exit_code : null,
         aggregated_output: typeof item.aggregated_output === 'string' ? item.aggregated_output : '',
         duration_ms: typeof item.duration_ms === 'number' ? item.duration_ms : null,
-      })).catch(() => {})
+      }))
+      armCmdFlush(run)
       return false
     }
     if (item.type === 'reasoning') {
       const text = typeof item.text === 'string' ? item.text.trim() : ''
-      if (text) await sendMessage(discordThreadId, reasoningSpoiler(truncateText(text, 1800))).catch(() => {})
+      // Flush pending commands first so ordering (commands → reasoning) is kept.
+      await flushCmdBatch(run)
+      if (text) await sendMessage(run.discordThreadId, reasoningSpoiler(truncateText(text, 1800))).catch(() => {})
       return false
     }
     if (item.type === 'agent_message') {
       const text = typeof item.text === 'string' ? item.text.trim() : ''
+      await flushCmdBatch(run)
       if (!text) return false
-      await sendChunks(discordThreadId, agentProse(text))
+      await sendChunks(run.discordThreadId, agentProse(text))
       return true
     }
     return false
@@ -1259,6 +1298,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
       statusMessageId: workingId,
       statusLines: [],
       renderChain: Promise.resolve(),
+      cmdBatch: [],
     }
     activeRuns.set(discordThreadId, active)
 
@@ -1297,7 +1337,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
           if (note) queueLiveUpdate(discordThreadId, note)
           // Serialize rich per-item renders so Discord messages keep event order.
           active.renderChain = active.renderChain
-            .then(() => renderCodexEvent(discordThreadId, event))
+            .then(() => renderCodexEvent(active, event))
             .then(rendered => { if (rendered) active.renderedAgentMessage = true })
             .catch(() => {})
         },
@@ -1311,8 +1351,9 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
         updatedAt: new Date().toISOString(),
       })
       managedThreads.add(discordThreadId)
-      // Flush any in-flight per-item renders before finalizing.
+      // Flush any in-flight per-item renders + buffered commands before finalizing.
       await active.renderChain.catch(() => {})
+      await flushCmdBatch(active).catch(() => {})
       if (active.editTimer) { clearTimeout(active.editTimer); active.editTimer = undefined }
       await editMessage(discordThreadId, workingId, completedStatus(elapsedSeconds(active.startedAt)))
       // Agent prose already rendered live; only send finalText if nothing was.
@@ -1336,6 +1377,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
       }
     } finally {
       if (active.editTimer) clearTimeout(active.editTimer)
+      if (active.cmdBatchTimer) clearTimeout(active.cmdBatchTimer)
       clearStopFollowup(active)
       if (activeRuns.get(discordThreadId) === active) activeRuns.delete(discordThreadId)
       void runNextQueued(discordThreadId).catch(err => {
