@@ -28,6 +28,12 @@ export type DiscordDaemonOptions = {
    * drive the bridge. The daemon's own bot account is never added implicitly.
    */
   allowBotAuthorIds?: string[]
+  /**
+   * Active engine. In `app-server` mode the per-exec ask MCP tool is not wired
+   * (one shared engine serves N threads), so the bridge instead instructs Codex
+   * to ask in plain prose and end the turn; the human's reply continues it.
+   */
+  engine?: 'exec' | 'app-server'
   runCodex: typeof import('./codex-runner.js').runCodex
   /**
    * When set (app-server engine), returns the terminal command that attaches a
@@ -483,8 +489,12 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
     }, 10000)
   }
 
+  const isAppServer = opts.engine === 'app-server'
+
+  // The ask MCP tool only functions in exec mode (it locates the Discord thread
+  // via per-exec env). In app-server mode Codex asks via prose-and-yield instead.
   function askMcpEnabled(): boolean {
-    return process.env.CODEX_DISCORD_ASK_MCP !== '0'
+    return !isAppServer && process.env.CODEX_DISCORD_ASK_MCP !== '0'
   }
 
   function tomlString(value: string): string {
@@ -509,13 +519,17 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
     ]
   }
 
+  const ASK_AND_YIELD_INSTRUCTION =
+    'Codex Discord bridge note: you are talking to a human in a Discord thread. If you need them to choose between options, confirm a decision, or provide missing information before you can safely continue, do NOT guess and do NOT call any request_user_input/ask tool (none is available here). Instead, stop and make your question the final message of this turn — state it plainly and list the options if there are any. The human will reply in the thread and you will continue from there. Only stop to ask when you are genuinely blocked; otherwise keep working and report as you go.'
+
+  const ASK_VIA_MCP_INSTRUCTION =
+    'Codex Discord bridge note: when you need the user to choose between options, confirm a decision, or provide missing input, call the MCP tool `ask_user_question` instead of ending the turn with a plain question. The tool will ask the user in this Discord thread and return the answer.'
+
   function withAskInstruction(prompt: string): string {
+    // app-server: prose-and-yield (the ask MCP tool is not wired in this engine).
+    if (isAppServer) return [ASK_AND_YIELD_INSTRUCTION, '', prompt].join('\n')
     if (!askMcpEnabled()) return prompt
-    return [
-      'Codex Discord bridge note: when you need the user to choose between options, confirm a decision, or provide missing input, call the MCP tool `ask_user_question` instead of ending the turn with a plain question. The tool will ask the user in this Discord thread and return the answer.',
-      '',
-      prompt,
-    ].join('\n')
+    return [ASK_VIA_MCP_INSTRUCTION, '', prompt].join('\n')
   }
 
   function button(customId: string, label: string, style = 1): RestJson {
@@ -878,7 +892,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
     if (opts.model) console.error(`  model:          ${opts.model}`)
     console.error(`  state dir:      ${opts.stateDir}`)
     console.error(`  session homes:  ${codexSessionHomes().map(shortPath).join(', ')}`)
-    console.error(`  ask MCP:        ${askMcpEnabled() ? 'enabled' : 'disabled'}`)
+    console.error(`  ask mode:       ${isAppServer ? 'prose (ask & yield turn)' : askMcpEnabled() ? 'MCP (ask_user_question)' : 'disabled'}`)
     console.error('')
     console.error('Use Discord:')
     console.error('  !codex <task>                  start a new Codex session thread')

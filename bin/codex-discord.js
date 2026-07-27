@@ -173,6 +173,7 @@ async function start(configFile, cliOpts) {
     proxy: config.proxy,
     debug: config.debug,
     allowBotAuthorIds: config.allowBotAuthorIds,
+    engine: config.engine,
     runCodex: runner,
     remoteAttachCommand,
   })

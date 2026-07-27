@@ -104,9 +104,14 @@ consumer (rendering, finalText extraction, `!status`) gets it for free.
 5. Post a landing message with the ready-to-copy terminal attach command.
 6. If a prompt was given, `turn/start` it and stream the reply.
 
-Inbound messages on an existing thread → `turn/start` (idle). One live Codex
-turn per Discord thread at a time; a message sent mid-turn is not auto-queued
-(reply with the status snapshot) — use `!queue` or `!stop`.
+Inbound messages on an existing thread → `turn/start` (idle). If the engine has
+evicted the thread from memory (e.g. after an app-server restart), `turn/start`
+fails `thread not found`; the runner then `thread/resume`s it from the on-disk
+rollout and retries once (`src/appserver-runner.ts`).
+
+One live Codex turn per Discord thread at a time. A plain message sent mid-turn
+is **auto-queued** and runs when the current turn finishes (`!stop` interrupts so
+it starts now; `!queue` queues explicitly).
 
 ---
 
@@ -148,9 +153,17 @@ line) > commands/reasoning (subtext / collapsed).
   `!codex`.
 - **Sandbox** is passed through to Codex (`CODEX_SANDBOX`, default
   `workspace-write`). `danger-full-access` only when you mean it.
-- **ask-MCP.** The bridge auto-injects a local `ask_user_question` MCP tool so
-  Codex can ask the human in-thread (buttons / selects / modal) before ending a
-  turn. Engine-agnostic. Disable with `CODEX_DISCORD_ASK_MCP=0`.
+- **Asking the human — engine-specific.**
+  - `exec` mode auto-injects a local `ask_user_question` MCP tool so Codex can
+    ask in-thread (buttons / selects / modal) before ending a turn. It routes by
+    per-exec env (`CODEX_DISCORD_THREAD_ID`). Disable with `CODEX_DISCORD_ASK_MCP=0`.
+  - `app-server` mode can't use that tool (one shared engine serves N threads, so
+    per-exec env routing doesn't apply). Instead the bridge instructs Codex to
+    **ask in plain prose and end the turn**; the human's reply continues the
+    session (works with auto-queue). Codex's native `request_user_input` is *not*
+    usable here — the engine gates it to `plan` collaboration mode, unavailable in
+    the `default` mode work turns run in. In-thread buttons for app-server remain a
+    future plan-mode-only enhancement.
 
 ---
 
