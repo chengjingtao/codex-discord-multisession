@@ -72,7 +72,7 @@ export function resolveRuntimeConfig(config: BridgeConfig): Required<Pick<Bridge
     model: process.env.CODEX_MODEL ?? config.model,
     allowBotAuthorIds: parseBotIds(process.env.CODEX_DISCORD_ALLOW_BOT_IDS) ?? config.allowBotAuthorIds,
     stateDir,
-    engine: (process.env.CODEX_ENGINE as 'exec' | 'app-server' | undefined) ?? config.engine ?? 'exec',
+    engine: (process.env.CODEX_ENGINE as 'exec' | 'app-server' | undefined) ?? config.engine ?? 'app-server',
     appServerPort: Number(process.env.CODEX_DISCORD_APP_SERVER_PORT ?? config.appServerPort ?? 0) || 0,
     appServerTokenEnv: process.env.CODEX_DISCORD_APP_SERVER_TOKEN_ENV ?? config.appServerTokenEnv,
   }

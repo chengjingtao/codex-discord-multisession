@@ -4,14 +4,22 @@
 [![npm version](https://img.shields.io/npm/v/codex-discord-multisession)](https://www.npmjs.com/package/codex-discord-multisession)
 [![License](https://img.shields.io/github/license/ccuuu/codex-discord-multisession)](./LICENSE)
 
-Experimental Discord bridge for Codex CLI. It is the Codex-shaped equivalent
-of `claude-discord-multisession`: each Discord thread maps to one persistent
-Codex `thread_id`, and follow-up Discord messages resume that Codex session.
+Discord bridge for Codex CLI. It is the Codex-shaped equivalent of
+`claude-discord-multisession`: each Discord thread maps to one persistent Codex
+`thread_id`, and follow-up Discord messages continue that Codex session.
 The same package also includes a local-only `codex-wechat` bridge for the
 previously built `wx` personal WeChat CLI.
 
-Promotion copy and suggested repository metadata live in
-[docs/promo-copy.md](./docs/promo-copy.md).
+By default the bridge runs the **`app-server` engine**, giving **form A — live
+same-source**: a terminal Codex session and its bound Discord thread are the
+*same live session*, so you can speak from either side and see turns stream in
+real time. Attach a terminal with `codex resume <threadId> --remote ws://…`.
+An `exec` engine (one `codex exec` per message, turn-taking handoff) is still
+available via `CODEX_ENGINE=exec`.
+
+> **Read [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) before extending the
+> bridge** — it is the living reference for capabilities and design principles.
+> Promotion copy lives in [docs/promo-copy.md](./docs/promo-copy.md).
 
 ## Quick Start
 
@@ -108,13 +116,17 @@ Then send:
 
 ## What is verified
 
-Codex CLI `0.130.0` supports the minimum session workflow needed by this
-bridge:
+Verified on Codex CLI `0.145.0` (app-server engine) and `0.130.0+` (exec
+engine):
 
-1. `codex exec --json ...` emits `thread.started` with a stable Codex
-   `thread_id`.
-2. `codex exec resume --json <thread_id> ...` resumes the same conversation.
-3. A local binding store can map `discordThreadId -> codexThreadId`.
+1. **app-server**: `codex app-server` hosts N threads over JSON-RPC; multiple
+   clients that `thread/resume` the same persisted thread receive every turn's
+   events live (form A), and `codex resume --remote` attaches a terminal to the
+   bridge's app-server. `thread/inject_items` flushes the rollout so attach
+   works immediately.
+2. **exec**: `codex exec --json` emits `thread.started`; `codex exec resume
+   --json <thread_id>` continues the same conversation.
+3. A local binding store maps `discordThreadId -> codexThreadId`.
 
 Run the smoke test:
 
@@ -166,17 +178,18 @@ Thread control commands:
 | `!pause` | Optional: pause Discord-driven Codex turns for this thread while you work locally. |
 | `!status` | Show bound Codex session, workdir, current mode, queued count, and the current live status snapshot when a turn is running. |
 
-This is a session handoff, not an attachment to the hidden `codex exec`
-child process. The current bridge uses non-interactive `codex exec --json`,
-so there is no persistent TUI terminal to attach to. Use `!attach` to open the
-same Codex conversation in your own terminal. Discord and terminal can both
-drive the same session; the bridge allows only one Codex turn per Discord
-thread at a time. While a turn is running, the status message is edited with
-live Codex JSON events such as started commands, command results, and short
-agent message excerpts. A normal message sent during a running turn is not
-queued automatically; the bridge replies with the current status snapshot.
-Wait and resend it after completion, use `!queue <message>` to queue it
-explicitly, or use `!stop` to interrupt the running turn.
+Under the default **`app-server` engine**, Discord and the terminal attach to
+the *same live Codex session*: `!attach` prints a `codex resume <threadId>
+--remote ws://…` command, and turns driven from either side stream to both in
+real time. Under `CODEX_ENGINE=exec` the same `!attach` prints a local
+`cd <workdir> && codex resume <session>` handoff instead (turn-taking, no live
+mirror). Either way the bridge allows only one Codex turn per Discord thread at
+a time. While a turn runs, a lightweight `⏳` status line updates (~1.5 s
+cadence) and each item renders on its own: agent prose as clean markdown,
+commands as muted `-# ✓/✗` subtext lines (output shown only on failure),
+reasoning as a collapsed spoiler. A normal message sent during a running turn
+is not queued automatically; the bridge replies with the current status
+snapshot. Wait and resend after completion, use `!queue <message>`, or `!stop`.
 
 ### Interactive Questions
 
@@ -400,6 +413,10 @@ Do not commit `.env` or tokens. `.env` is ignored by this repo.
 Optional:
 
 ```sh
+export CODEX_ENGINE='app-server'                 # default; set 'exec' to fall back
+export CODEX_DISCORD_APP_SERVER_PORT='0'          # 0 = pick a free localhost port
+export CODEX_DISCORD_APP_SERVER_TOKEN_ENV='CODEX_APP_SERVER_TOKEN'  # optional bearer-token env name
+export CODEX_DISCORD_ALLOW_BOT_IDS='<bot id>,<bot id>'  # bot authors allowed to trigger !codex
 export CODEX_MODEL='gpt-5.5'
 export CODEX_SANDBOX='workspace-write'
 export CODEX_DISCORD_SANDBOX='workspace-write'
@@ -412,6 +429,12 @@ export CODEX_BIN='codex'
 export CODEX_HOME="$HOME/.codex"
 export CODEX_SESSION_HOMES="$HOME/.config/codex-alt"
 ```
+
+The `app-server` engine requires Codex ≥ 0.145 (with `codex app-server`). The
+bridge spawns and supervises one app-server bound to `127.0.0.1`; each Discord
+thread is one Codex thread on it, and `!attach` prints the `codex resume
+<threadId> --remote ws://127.0.0.1:<port>` command to join the same live
+session from a terminal. See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
 
 `npm run start` uses the same Discord bridge and interactive startup prompt
 during local development. Set `CODEX_DISCORD_NO_PROMPT=1` or pass `--yes` to
@@ -582,16 +605,18 @@ The Claude plugin uses Claude Code channel APIs:
 - `PreToolUse` hook for `AskUserQuestion`
 - `.claude-plugin/plugin.json`
 
-Codex does not expose those exact channel APIs. This prototype uses the Codex
-CLI as the control plane instead:
+Codex does not expose those exact channel APIs. This bridge uses Codex's own
+runtime as the control plane instead:
 
-- Start: `codex exec --json`
-- Continue: `codex exec resume --json <thread_id>`
-- Output parsing: JSONL events
-- State: local bindings file
-- Interactive questions: auto-injected local MCP tool
-  `ask_user_question`, routed through the bridge's local ask socket and
-  Discord message components
+- Control plane (default): `codex app-server` — the bridge is a JSON-RPC client
+  driving `thread/start` / `turn/start` and reading the event stream; a terminal
+  joins the same live thread with `codex resume --remote` (form A). Fallback:
+  `codex exec --json` / `codex exec resume --json <thread_id>`.
+- Output parsing: app-server v2 notifications translated to exec-JSON events
+  (one internal shape; see [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) §4).
+- State: local bindings file.
+- Interactive questions: auto-injected local MCP tool `ask_user_question`,
+  routed through the bridge's local ask socket and Discord message components.
 
 The `AskUserQuestion` equivalent is implemented as a Codex MCP tool, not as a
 native runtime hook. Codex must choose to call `ask_user_question`; the bridge
@@ -600,8 +625,16 @@ Native permission prompt routing is still separate work.
 
 ## Next Work
 
-- Add allowlist and guild/channel policy.
-- Add richer rendering for long-running live status and command output.
-- Add attachment download/upload handling.
-- Add permission approval routing if Codex exposes stable approval events.
-- Package as a Codex plugin or local tool once the runtime contract is clear.
+Done since the original MVP: app-server engine (form A live same-source),
+bot-author allowlist, `!codex --cwd/--name`, and readable per-item rendering
+(lightweight command lines, collapsed reasoning, clean prose). See
+[docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md).
+
+Open:
+
+- Guild/channel policy beyond the bot-author allowlist.
+- Native permission-approval routing (transport via `onServerRequest` exists;
+  Discord ✅/❌ reaction surface is not wired yet).
+- Mid-turn `turn/steer` (currently messages during a turn use `!queue`).
+- Attachment download/upload handling.
+- Package as a Codex plugin once the runtime contract is stable.
