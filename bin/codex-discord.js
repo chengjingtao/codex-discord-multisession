@@ -149,10 +149,18 @@ async function start(configFile, cliOpts) {
   let remoteAttachCommand
   if (config.engine === 'app-server') {
     const token = config.appServerTokenEnv ? process.env[config.appServerTokenEnv] : undefined
+    // Apply sandbox/approval as GLOBAL app-server config so they hold for every
+    // thread it hosts, including resumed ones (which don't re-receive per-thread
+    // settings). danger-full-access ⇒ never approve (bridge answers no approval
+    // reverse requests). This is what makes YOLO stick across restart+resume.
+    const configOverrides = []
+    if (config.sandbox) configOverrides.push(`sandbox_mode=${config.sandbox}`)
+    configOverrides.push(`approval_policy=${config.sandbox === 'danger-full-access' ? 'never' : 'on-request'}`)
     const manager = new AppServerManager({
       codexBin: config.codexBin,
       port: config.appServerPort,
       token,
+      configOverrides,
       log: line => console.error(line),
     })
     await manager.start()

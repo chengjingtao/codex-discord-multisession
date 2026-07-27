@@ -84,10 +84,13 @@ export function makeAppServerRunner(manager: { client(): AppServerClient }): (op
       void (async () => {
         try {
           if (!threadId) {
+            const sandbox = opts.sandbox ?? 'workspace-write'
             const started = await client.request<{ thread: { id: string } }>('thread/start', {
               cwd: opts.cwd,
-              sandbox: opts.sandbox ?? 'workspace-write',
-              approvalPolicy: 'on-request',
+              sandbox,
+              // YOLO sandbox ⇒ no approval gate (approvals are reverse requests
+              // the bridge does not answer, so on-request would block).
+              approvalPolicy: sandbox === 'danger-full-access' ? 'never' : 'on-request',
             })
             threadId = started.thread.id
             codexThreadId = threadId

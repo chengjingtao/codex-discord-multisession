@@ -8,6 +8,14 @@ export type AppServerManagerOptions = {
   port?: number
   token?: string
   env?: Record<string, string>
+  /**
+   * Global `-c key=value` config overrides applied to the app-server process,
+   * so they take effect for EVERY thread it hosts — including threads resumed
+   * from an on-disk rollout, which do not otherwise re-receive per-thread
+   * sandbox/approval settings. Used to make the whole engine YOLO
+   * (`sandbox_mode`, `approval_policy`).
+   */
+  configOverrides?: string[]
   log?: (line: string) => void
 }
 
@@ -62,7 +70,9 @@ export class AppServerManager {
   }
 
   private async spawnChild(): Promise<void> {
-    const args = ['app-server', '--listen', `ws://${this.host}:${this.port}`]
+    // `-c` overrides are global options and must precede the `app-server` subcommand.
+    const configFlags = (this.opts.configOverrides ?? []).flatMap(o => ['-c', o])
+    const args = [...configFlags, 'app-server', '--listen', `ws://${this.host}:${this.port}`]
     this.child = spawn(this.opts.codexBin, args, {
       stdio: ['ignore', 'ignore', 'pipe'],
       env: this.opts.env ? { ...process.env, ...this.opts.env } : process.env,
