@@ -151,8 +151,15 @@ line) > commands/reasoning (subtext / collapsed).
   *except* IDs in `allowBotAuthorIds` / `CODEX_DISCORD_ALLOW_BOT_IDS` — this is
   how a trusted external bot (e.g. a Claude Discord session) can trigger
   `!codex`.
-- **Sandbox** is passed through to Codex (`CODEX_SANDBOX`, default
-  `workspace-write`). `danger-full-access` only when you mean it.
+- **Sandbox / approval.** Default `workspace-write`; `danger-full-access` only
+  when you mean it (`CODEX_SANDBOX` / `config.sandbox`). In **app-server mode**
+  these are applied as *global* engine config (`-c sandbox_mode=… -c
+  approval_policy=…` on the app-server process, via
+  `AppServerManager.configOverrides`), so they hold for **every** thread it
+  hosts — including threads *resumed* from a rollout, which otherwise fall back
+  to codex defaults and would silently re-sandbox. `danger-full-access` ⇒
+  `approval_policy=never`, because approvals are reverse requests the bridge
+  does not answer (an `on-request` policy would hang the turn).
 - **Asking the human — engine-specific.**
   - `exec` mode auto-injects a local `ask_user_question` MCP tool so Codex can
     ask in-thread (buttons / selects / modal) before ending a turn. It routes by
