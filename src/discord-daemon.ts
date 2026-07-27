@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { loadBindings, saveBindings, upsertBinding, type Binding } from './bindings.js'
 import { codexSessionHomes, findCodexSessionSummary, listCodexSessions, resolveCodexSessionId, type CodexSessionSummary } from './codex-sessions.js'
 import { CodexRunInterruptedError } from './codex-runner.js'
+import { commandEmbed, reasoningSpoiler, agentProse, runningStatus, completedStatus } from './discord-render.js'
 
 export type DiscordDaemonOptions = {
   token: string
@@ -87,6 +88,8 @@ type ActiveRun = {
   stopRequested?: boolean
   stopRequestedAt?: number
   stopFollowupTimer?: NodeJS.Timeout
+  renderChain: Promise<void>
+  renderedAgentMessage?: boolean
 }
 
 type QueuedPrompt = {
@@ -245,14 +248,19 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
     throw new Error(`Discord REST ${method} ${path} exhausted retries`)
   }
 
-  async function sendMessage(channelId: string, content: string, options: { components?: unknown[] } = {}): Promise<string> {
+  async function sendMessage(channelId: string, content: string, options: { components?: unknown[]; embeds?: unknown[] } = {}): Promise<string> {
     const body: RestJson = {
       content,
       allowed_mentions: { parse: [] },
     }
     if (options.components) body.components = options.components
+    if (options.embeds) body.embeds = options.embeds
     const msg = await discordRequest('POST', `/channels/${channelId}/messages`, body)
     return String(msg.id)
+  }
+
+  async function sendEmbed(channelId: string, embed: unknown): Promise<string> {
+    return sendMessage(channelId, '', { embeds: [embed] })
   }
 
   async function editMessage(channelId: string, messageId: string, content: string, options: { components?: unknown[] } = {}): Promise<void> {
@@ -313,10 +321,6 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
     }
   }
 
-  function escapeCodeBlock(text: string): string {
-    return text.replace(/```/g, '``\u200b`')
-  }
-
   function truncateText(text: string, limit: number): string {
     if (text.length <= limit) return text
     return `${text.slice(0, Math.max(0, limit - 20))}\n... [truncated]`
@@ -338,49 +342,66 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
 
   function formatLiveStatus(run: ActiveRun, limit = 1900): string {
     const pending = queueLength(run.discordThreadId)
-    const queueText = pending ? ` ${pending} queued.` : ''
-    const header = run.stopRequested
-      ? `Codex is stopping (${elapsedSeconds(run.startedAt)}s total, ${elapsedSeconds(run.stopRequestedAt ?? run.startedAt)}s since interrupt).${queueText} Waiting for process exit.`
-      : `Codex is running (${elapsedSeconds(run.startedAt)}s).${queueText} Use \`!stop\` to interrupt.`
-    const lines = run.statusLines.slice(-8)
-    const body = lines.length ? `\n\n${lines.join('\n\n')}` : ''
-    return truncateText(`${header}${body}`, limit)
+    const queueSuffix = pending ? ` · ${pending} 排队` : ''
+    if (run.stopRequested) {
+      return truncateText(`⏳ 正在停止 (${elapsedSeconds(run.startedAt)}s)…${queueSuffix}`, limit)
+    }
+    const note = run.statusLines[run.statusLines.length - 1]
+    return truncateText(`${runningStatus(elapsedSeconds(run.startedAt), note)}${queueSuffix}`, limit)
   }
 
-  function summarizeCodexEvent(event: unknown): string | undefined {
+  // A short activity note for the single live status line (content itself is
+  // rendered as separate embed/prose/spoiler messages by renderCodexEvent).
+  function noteForCodexEvent(event: unknown): string | undefined {
     if (!event || typeof event !== 'object') return undefined
     const ev = event as Record<string, unknown>
     const type = ev.type
     const item = ev.item && typeof ev.item === 'object' ? ev.item as Record<string, unknown> : undefined
-
-    if (type === 'thread.started' && typeof ev.thread_id === 'string') {
-      return `Session started: \`${ev.thread_id}\``
-    }
-    if (type === 'turn.started') return 'Turn started.'
-    if (type === 'turn.completed') return 'Turn completed.'
-
+    if (type === 'turn.started') return '已开始'
     if (type === 'item.started' && item?.type === 'command_execution') {
-      const command = typeof item.command === 'string' ? item.command : '(unknown command)'
-      return `Running command:\n\`\`\`sh\n${escapeCodeBlock(truncateText(command, 500))}\n\`\`\``
+      const cmd = typeof item.command === 'string' ? item.command.replace(/\s+/g, ' ').trim() : ''
+      return `运行命令: ${truncateComponentText(cmd, 60)}`
     }
-
     if (type === 'item.completed' && item?.type === 'command_execution') {
-      const command = typeof item.command === 'string' ? item.command : '(unknown command)'
-      const exitCode = item.exit_code === null || item.exit_code === undefined ? '?' : String(item.exit_code)
-      const output = typeof item.aggregated_output === 'string' ? item.aggregated_output.trim() : ''
-      const outputBlock = output
-        ? `\nOutput:\n\`\`\`text\n${escapeCodeBlock(truncateText(output, 700))}\n\`\`\``
-        : ''
-      return `Command finished with exit ${exitCode}:\n\`\`\`sh\n${escapeCodeBlock(truncateText(command, 350))}\n\`\`\`${outputBlock}`
+      return `命令完成 (exit ${item.exit_code ?? '?'})`
     }
-
-    if (type === 'item.completed' && item?.type === 'agent_message') {
-      const text = typeof item.text === 'string' ? item.text.replace(/\s+/g, ' ').trim() : ''
-      if (!text) return undefined
-      return `Agent message:\n${truncateText(text, 700)}`
-    }
-
+    if (type === 'item.completed' && item?.type === 'agent_message') return '生成回复'
+    if (type === 'item.completed' && item?.type === 'reasoning') return '思考中'
     return undefined
+  }
+
+  // Render one translated exec event into its own Discord message: command
+  // executions as colored embeds, reasoning as a collapsed spoiler, agent
+  // prose as a clean markdown message. Returns true if an agent message was
+  // rendered (so the completion path can skip the duplicate finalText).
+  async function renderCodexEvent(discordThreadId: string, event: unknown): Promise<boolean> {
+    if (!event || typeof event !== 'object') return false
+    const ev = event as Record<string, unknown>
+    if (ev.type !== 'item.completed') return false
+    const item = ev.item && typeof ev.item === 'object' ? ev.item as Record<string, unknown> : undefined
+    if (!item) return false
+
+    if (item.type === 'command_execution') {
+      await sendEmbed(discordThreadId, commandEmbed({
+        command: typeof item.command === 'string' ? item.command : '',
+        exit_code: typeof item.exit_code === 'number' ? item.exit_code : null,
+        aggregated_output: typeof item.aggregated_output === 'string' ? item.aggregated_output : '',
+        duration_ms: typeof item.duration_ms === 'number' ? item.duration_ms : null,
+      })).catch(() => {})
+      return false
+    }
+    if (item.type === 'reasoning') {
+      const text = typeof item.text === 'string' ? item.text.trim() : ''
+      if (text) await sendMessage(discordThreadId, reasoningSpoiler(truncateText(text, 1800))).catch(() => {})
+      return false
+    }
+    if (item.type === 'agent_message') {
+      const text = typeof item.text === 'string' ? item.text.trim() : ''
+      if (!text) return false
+      await sendChunks(discordThreadId, agentProse(text))
+      return true
+    }
+    return false
   }
 
   function appendStatusLine(run: ActiveRun, line: string): boolean {
@@ -398,7 +419,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
     run.editTimer = setTimeout(() => {
       run.editTimer = undefined
       editMessage(discordThreadId, run.statusMessageId, formatLiveStatus(run)).catch(() => {})
-    }, 1200)
+    }, 1500)
   }
 
   async function editLiveStatusNow(run: ActiveRun, line?: string): Promise<void> {
@@ -1231,16 +1252,15 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
       return
     }
 
-    const workingId = await sendMessage(discordThreadId, fromQueue
-      ? 'Codex is running a queued message. Live updates will appear here. Use `!stop` to interrupt.'
-      : 'Codex is running. Live updates will appear here. Use `!stop` to interrupt.')
+    const workingId = await sendMessage(discordThreadId, runningStatus(0, fromQueue ? '队列消息' : undefined))
     const active: ActiveRun = {
       abort: new AbortController(),
       discordThreadId,
       startedAt: Date.now(),
       prompt,
       statusMessageId: workingId,
-      statusLines: ['Turn requested.'],
+      statusLines: [],
+      renderChain: Promise.resolve(),
     }
     activeRuns.set(discordThreadId, active)
 
@@ -1275,8 +1295,13 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
         env,
         signal: active.abort.signal,
         onEvent: event => {
-          const line = summarizeCodexEvent(event)
-          if (line) queueLiveUpdate(discordThreadId, line)
+          const note = noteForCodexEvent(event)
+          if (note) queueLiveUpdate(discordThreadId, note)
+          // Serialize rich per-item renders so Discord messages keep event order.
+          active.renderChain = active.renderChain
+            .then(() => renderCodexEvent(discordThreadId, event))
+            .then(rendered => { if (rendered) active.renderedAgentMessage = true })
+            .catch(() => {})
         },
         prompt: withAskInstruction(prompt),
       })
@@ -1288,8 +1313,14 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
         updatedAt: new Date().toISOString(),
       })
       managedThreads.add(discordThreadId)
-      await editMessage(discordThreadId, workingId, `Codex session: ${result.codexThreadId}\nCompleted in ${elapsedSeconds(active.startedAt)}s.`)
-      await sendChunks(discordThreadId, result.finalText)
+      // Flush any in-flight per-item renders before finalizing.
+      await active.renderChain.catch(() => {})
+      if (active.editTimer) { clearTimeout(active.editTimer); active.editTimer = undefined }
+      await editMessage(discordThreadId, workingId, completedStatus(elapsedSeconds(active.startedAt)))
+      // Agent prose already rendered live; only send finalText if nothing was.
+      if (!active.renderedAgentMessage && result.finalText.trim()) {
+        await sendChunks(discordThreadId, agentProse(result.finalText))
+      }
       if (opts.remoteAttachCommand && !binding) {
         await sendMessage(
           discordThreadId,
