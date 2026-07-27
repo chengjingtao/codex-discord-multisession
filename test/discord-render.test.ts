@@ -4,12 +4,12 @@ import { commandLine, reasoningSpoiler, agentProse, runningStatus, completedStat
 
 test('commandLine: success → single muted subtext line, no output (A), unwrapped', () => {
   const s = commandLine({ command: "/bin/bash -lc 'echo hello'", exit_code: 0, aggregated_output: 'lots\nof\noutput\n', duration_ms: 1200 })
-  assert.equal(s, '-# ✅ `echo hello` · exit 0 · 1.2s')
+  assert.equal(s, '-# ✓ `echo hello` · exit 0 · 1.2s')
 })
 
 test('commandLine: failure keeps subtext line + expands output (B)', () => {
   const s = commandLine({ command: 'false', exit_code: 1, aggregated_output: 'boom\n' })
-  assert.match(s, /^-# ❌ `false` · exit 1/)
+  assert.match(s, /^-# ✗ `false` · exit 1/)
   assert.match(s, /```text\nboom\n```/)
 })
 
@@ -23,18 +23,18 @@ test('commandLine: failure output capped to 12 lines with +N marker', () => {
 
 test('commandLine: null exit → failure marker, exit ?', () => {
   const s = commandLine({ command: 'x', exit_code: null, aggregated_output: 'partial' })
-  assert.match(s, /^-# ❌ `x` · exit \?/)
+  assert.match(s, /^-# ✗ `x` · exit \?/)
   assert.match(s, /partial/)
 })
 
 test('commandLine: failure with empty output → just the subtext line', () => {
   const s = commandLine({ command: 'x', exit_code: 1, aggregated_output: '   ' })
-  assert.equal(s, '-# ❌ `x` · exit 1')
+  assert.equal(s, '-# ✗ `x` · exit 1')
 })
 
 test('commandLine: multiline command collapses', () => {
   const s = commandLine({ command: 'pwd\ncodex --version', exit_code: 0, aggregated_output: 'v' })
-  assert.equal(s, '-# ✅ `pwd; codex --version` · exit 0')
+  assert.equal(s, '-# ✓ `pwd; codex --version` · exit 0')
 })
 
 test('commandLine: backticks in command are neutralized', () => {

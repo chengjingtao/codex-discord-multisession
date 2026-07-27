@@ -55,7 +55,9 @@ function capOutput(output: string, maxLines: number, maxChars: number): { shown:
  */
 export function commandLine(item: CommandItem): string {
   const ok = item.exit_code === 0
-  const emoji = ok ? '✅' : '❌'
+  // Monochrome text glyphs (not the ✅/❌ emoji) so command lines stay subtle
+  // and don't collide with the ✅ in the "✅ 完成" status line.
+  const emoji = ok ? '✓' : '✗'
   const cmd = inlineSafe(truncate(collapse(unwrapShell(item.command)) || '(command)', CMD_MAX))
   const durText = typeof item.duration_ms === 'number' ? ` · ${(item.duration_ms / 1000).toFixed(1)}s` : ''
   const head = `-# ${emoji} \`${cmd}\` · exit ${item.exit_code ?? '?'}${durText}`
