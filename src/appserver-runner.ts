@@ -5,6 +5,30 @@ import { translateNotification, agentTextOf } from './appserver-protocol.js'
 
 const PRIMING_TEXT = '(session initialized by codex-discord bridge)'
 
+/** True when the engine rejected a call because the thread isn't loaded in memory. */
+function isThreadNotLoaded(err: unknown): boolean {
+  const msg = err instanceof Error ? err.message : String(err)
+  return /thread not found|no rollout found|unknown thread/i.test(msg)
+}
+
+/**
+ * Start a turn on an existing thread. The engine does NOT auto-load a thread on
+ * `turn/start`; after an app-server restart the thread is gone from memory and
+ * `turn/start` fails `thread not found`. When that happens, resume the thread
+ * from its on-disk rollout and retry once. (A thread already in memory takes the
+ * fast path with no redundant resume.)
+ */
+async function startTurnResumingIfNeeded(client: AppServerClient, threadId: string, prompt: string): Promise<void> {
+  const startTurn = () => client.request('turn/start', { threadId, input: [{ type: 'text', text: prompt }] })
+  try {
+    await startTurn()
+  } catch (err) {
+    if (!threadId || !isThreadNotLoaded(err)) throw err
+    await client.request('thread/resume', { threadId })
+    await startTurn()
+  }
+}
+
 /**
  * Build a runner with the SAME signature as `runCodex`, driving turns over one
  * shared app-server client. It translates app-server v2 notifications into the
@@ -70,7 +94,7 @@ export function makeAppServerRunner(manager: { client(): AppServerClient }): (op
             // Flush rollout to disk (no model call) so a terminal can `resume`.
             await client.request('thread/inject_items', { threadId, items: [{ type: 'text', text: PRIMING_TEXT }] })
           }
-          await client.request('turn/start', { threadId, input: [{ type: 'text', text: opts.prompt }] })
+          await startTurnResumingIfNeeded(client, threadId, opts.prompt)
         } catch (err) {
           settle(() => reject(err instanceof Error ? err : new Error(String(err))))
         }

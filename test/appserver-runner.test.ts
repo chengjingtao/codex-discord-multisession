@@ -49,3 +49,33 @@ test('resume existing thread skips start/inject', async () => {
   await p
   assert.deepEqual(fake.calls.map(c => c.method), ['turn/start'])
 })
+
+test('existing thread not in memory (post-restart): resume from rollout then retry turn/start', async () => {
+  const notifyHandlers: Array<(m: string, p: any) => void> = []
+  const calls: string[] = []
+  let turnStarts = 0
+  const fake = {
+    client() {
+      return {
+        onNotification: (fn: any) => notifyHandlers.push(fn),
+        onServerRequest: () => {},
+        notify: () => {},
+        async request(method: string) {
+          calls.push(method)
+          if (method === 'turn/start') {
+            turnStarts++
+            // First attempt: thread was evicted by an app-server restart.
+            if (turnStarts === 1) throw new Error('{"code":-32600,"message":"thread not found: OLD"}')
+          }
+          return {}
+        },
+      }
+    },
+  }
+  const run = makeAppServerRunner(fake as any)
+  const p = run({ cwd: '/tmp', prompt: 'again', codexThreadId: 'OLD', onEvent: () => {} } as any)
+  await new Promise(r => setTimeout(r, 20))
+  notifyHandlers.forEach(fn => fn('turn/completed', {}))
+  await p
+  assert.deepEqual(calls, ['turn/start', 'thread/resume', 'turn/start'])
+})
