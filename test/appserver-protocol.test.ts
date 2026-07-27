@@ -17,11 +17,23 @@ test('commandExecution started → item.started command_execution', () => {
   assert.deepEqual(out, [{ type: 'item.started', item: { type: 'command_execution', command: 'echo hi' } }])
 })
 
-test('commandExecution completed → renamed fields', () => {
+test('commandExecution completed → renamed fields + duration_ms', () => {
   const out = translateNotification('item/completed', {
-    item: { type: 'commandExecution', command: 'echo hi', exitCode: 0, aggregatedOutput: 'hi\n' },
+    item: { type: 'commandExecution', command: 'echo hi', exitCode: 0, aggregatedOutput: 'hi\n', durationMs: 1200 },
   })
-  assert.deepEqual(out, [{ type: 'item.completed', item: { type: 'command_execution', command: 'echo hi', exit_code: 0, aggregated_output: 'hi\n' } }])
+  assert.deepEqual(out, [{ type: 'item.completed', item: { type: 'command_execution', command: 'echo hi', exit_code: 0, aggregated_output: 'hi\n', duration_ms: 1200 } }])
+})
+
+test('reasoning completed → reasoning event with text (from summary parts)', () => {
+  const out = translateNotification('item/completed', {
+    item: { type: 'reasoning', summary: [{ type: 'summary_text', text: 'I will check the dir.' }] },
+  })
+  assert.deepEqual(out, [{ type: 'item.completed', item: { type: 'reasoning', text: 'I will check the dir.' } }])
+})
+
+test('reasoning with empty text → no event', () => {
+  const out = translateNotification('item/completed', { item: { type: 'reasoning', summary: [], content: [] } })
+  assert.deepEqual(out, [])
 })
 
 test('agentMessage completed → agent_message + agentTextOf', () => {

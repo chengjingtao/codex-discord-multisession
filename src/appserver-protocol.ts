@@ -1,5 +1,19 @@
 export type ExecEvent = Record<string, unknown>
 
+/** Pull display text from a reasoning item's summary (preferred) or content. */
+function reasoningText(item: any): string {
+  const parts: unknown[] = [
+    ...(Array.isArray(item.summary) ? item.summary : []),
+    ...(Array.isArray(item.content) ? item.content : []),
+  ]
+  const texts = parts.map(p => {
+    if (typeof p === 'string') return p
+    if (p && typeof p === 'object' && typeof (p as any).text === 'string') return (p as any).text
+    return ''
+  }).filter(Boolean)
+  return texts.join('\n').trim()
+}
+
 /**
  * Translate ONE codex app-server v2 notification into zero-or-more exec-JSON
  * events — the event shapes `discord-daemon.ts` already knows how to format
@@ -30,10 +44,15 @@ export function translateNotification(method: string, params: any): ExecEvent[] 
           command: String(item.command ?? ''),
           exit_code: item.exitCode ?? null,
           aggregated_output: typeof item.aggregatedOutput === 'string' ? item.aggregatedOutput : '',
+          duration_ms: typeof item.durationMs === 'number' ? item.durationMs : null,
         } }]
       }
       if (item?.type === 'agentMessage') {
         return [{ type: 'item.completed', item: { type: 'agent_message', text: String(item.text ?? '') } }]
+      }
+      if (item?.type === 'reasoning') {
+        const text = reasoningText(item)
+        return text ? [{ type: 'item.completed', item: { type: 'reasoning', text } }] : []
       }
       return []
     }
