@@ -24,7 +24,11 @@ export class AppServerClient {
       this.ws = new WebSocket(this.url, { headers })
       this.ws.on('open', () => resolve())
       this.ws.on('error', err => reject(err))
-      this.ws.on('message', raw => this.onMessage(JSON.parse(String(raw))))
+      this.ws.on('message', raw => {
+        let msg: any
+        try { msg = JSON.parse(String(raw)) } catch { return }
+        this.onMessage(msg)
+      })
     })
   }
 
