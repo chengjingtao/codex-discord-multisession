@@ -11,6 +11,8 @@ import { upsertBinding } from '../dist/bindings.js'
 import { codexSessionHomes, findCodexSessionSummary, listCodexSessions, resolveCodexSessionId } from '../dist/codex-sessions.js'
 import { startDiscordDaemon } from '../dist/discord-daemon.js'
 import { resolveStartOptions } from '../dist/start-options.js'
+import { AppServerManager } from '../dist/appserver-manager.js'
+import { makeAppServerRunner } from '../dist/appserver-runner.js'
 
 function usage() {
   console.log(`Usage: codex-discord <command>
@@ -143,6 +145,23 @@ async function setup(configFile, cliOpts = {}) {
 
 async function start(configFile, cliOpts) {
   const config = await resolveStartOptions({ configFile, cliOpts })
+  let runner = runCodex
+  let remoteAttachCommand
+  if (config.engine === 'app-server') {
+    const token = config.appServerTokenEnv ? process.env[config.appServerTokenEnv] : undefined
+    const manager = new AppServerManager({
+      codexBin: config.codexBin,
+      port: config.appServerPort,
+      token,
+      log: line => console.error(line),
+    })
+    await manager.start()
+    runner = makeAppServerRunner(manager)
+    remoteAttachCommand = codexThreadId =>
+      `codex resume ${codexThreadId} --remote ${manager.remoteUrl()}` +
+      (config.appServerTokenEnv ? ` --remote-auth-token-env ${config.appServerTokenEnv}` : '')
+    console.error(`[engine] app-server live on ${manager.remoteUrl()}`)
+  }
   await startDiscordDaemon({
     token: config.token,
     parentChannelId: config.parentChannelId,
@@ -154,7 +173,8 @@ async function start(configFile, cliOpts) {
     proxy: config.proxy,
     debug: config.debug,
     allowBotAuthorIds: config.allowBotAuthorIds,
-    runCodex,
+    runCodex: runner,
+    remoteAttachCommand,
   })
 }
 
