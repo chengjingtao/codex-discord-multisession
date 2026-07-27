@@ -15,7 +15,8 @@ export const COLOR = {
 } as const
 
 const TITLE_MAX = 240
-const OUTPUT_MAX = 1500
+const FAIL_MAX_LINES = 12
+const FAIL_MAX_CHARS = 1200
 
 function collapse(text: string): string {
   return text.replace(/\s*\n+\s*/g, '; ').replace(/\s+/g, ' ').trim()
@@ -37,15 +38,34 @@ export type CommandItem = {
   duration_ms?: number | null
 }
 
+// Cap output to the first `maxLines` lines and `maxChars` chars. Returns the
+// shown text plus how many whole lines were dropped (for a "+N 行" marker).
+function capOutput(output: string, maxLines: number, maxChars: number): { shown: string; moreLines: number } {
+  const lines = output.split('\n')
+  const kept = lines.slice(0, maxLines)
+  let shown = kept.join('\n')
+  if (shown.length > maxChars) shown = `${shown.slice(0, Math.max(0, maxChars - 1))}…`
+  return { shown, moreLines: Math.max(0, lines.length - kept.length) }
+}
+
 export function commandEmbed(item: CommandItem): DiscordEmbed {
   const ok = item.exit_code === 0
   const title = `⚡ ${truncate(collapse(item.command) || '(command)', TITLE_MAX)}`
-  const output = item.aggregated_output.trim()
-  const description = output
-    ? `\`\`\`text\n${fenceSafe(truncate(output, OUTPUT_MAX))}\n\`\`\``
-    : '_(no output)_'
   const exitText = `exit ${item.exit_code ?? '?'}`
   const durText = typeof item.duration_ms === 'number' ? ` · ${(item.duration_ms / 1000).toFixed(1)}s` : ''
+
+  // A+B: successful commands show no output (just command + exit); failures
+  // expand the output, capped to a few lines with a "+N 行" marker.
+  let description: string | undefined
+  if (!ok) {
+    const output = item.aggregated_output.trim()
+    if (output) {
+      const { shown, moreLines } = capOutput(output, FAIL_MAX_LINES, FAIL_MAX_CHARS)
+      const marker = moreLines > 0 ? `\n… +${moreLines} 行` : ''
+      description = `\`\`\`text\n${fenceSafe(shown)}${marker}\n\`\`\``
+    }
+  }
+
   return {
     title,
     description,
