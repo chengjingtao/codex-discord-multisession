@@ -48,6 +48,8 @@
     "start": "tsx src/start.ts",
     "start:proxy": "CODEX_DISCORD_PROXY=${CODEX_DISCORD_PROXY:-http://127.0.0.1:7897} tsx src/start.ts",
     "start:wechat": "tsx src/wechat-start.ts",
+    "test": "tsx --test test/*.test.ts",
+    "e2e:appserver": "npm run build && node scripts/e2e-appserver.mjs",
     "smoke": "tsx src/smoke.ts",
     "smoke:wechat": "tsx src/wechat-smoke.ts",
     "typecheck": "tsc --noEmit"

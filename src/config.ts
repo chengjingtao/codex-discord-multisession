@@ -11,6 +11,21 @@ export type BridgeConfig = {
   model?: string
   stateDir?: string
   tokenSource?: 'env'
+  engine?: 'exec' | 'app-server'
+  appServerPort?: number
+  appServerTokenEnv?: string
+  /**
+   * Discord user IDs of bot accounts permitted to trigger bridge commands.
+   * Bot messages are ignored by default; IDs listed here are exempt so a
+   * trusted external bot can drive the bridge. Overridable at runtime with
+   * CODEX_DISCORD_ALLOW_BOT_IDS (comma-separated).
+   */
+  allowBotAuthorIds?: string[]
+}
+
+function parseBotIds(raw: string | undefined): string[] | undefined {
+  if (raw === undefined) return undefined
+  return raw.split(',').map(s => s.trim()).filter(Boolean)
 }
 
 export function defaultStateDir(): string {
@@ -45,7 +60,7 @@ export async function saveConfig(config: BridgeConfig, file = process.env.CODEX_
   await rename(tmp, file)
 }
 
-export function resolveRuntimeConfig(config: BridgeConfig): Required<Pick<BridgeConfig, 'parentChannelId' | 'workdir' | 'codexBin' | 'sandbox' | 'stateDir'>> & BridgeConfig {
+export function resolveRuntimeConfig(config: BridgeConfig): Required<Pick<BridgeConfig, 'parentChannelId' | 'workdir' | 'codexBin' | 'sandbox' | 'stateDir' | 'engine' | 'appServerPort'>> & BridgeConfig {
   const stateDir = process.env.CODEX_DISCORD_STATE_DIR ?? config.stateDir ?? defaultStateDir()
   return {
     ...config,
@@ -55,6 +70,10 @@ export function resolveRuntimeConfig(config: BridgeConfig): Required<Pick<Bridge
     codexBin: process.env.CODEX_BIN ?? config.codexBin ?? defaultCodexBin(),
     sandbox: process.env.CODEX_SANDBOX ?? process.env.CODEX_DISCORD_SANDBOX ?? config.sandbox ?? defaultCodexSandbox(),
     model: process.env.CODEX_MODEL ?? config.model,
+    allowBotAuthorIds: parseBotIds(process.env.CODEX_DISCORD_ALLOW_BOT_IDS) ?? config.allowBotAuthorIds,
     stateDir,
+    engine: (process.env.CODEX_ENGINE as 'exec' | 'app-server' | undefined) ?? config.engine ?? 'exec',
+    appServerPort: Number(process.env.CODEX_DISCORD_APP_SERVER_PORT ?? config.appServerPort ?? 0) || 0,
+    appServerTokenEnv: process.env.CODEX_DISCORD_APP_SERVER_TOKEN_ENV ?? config.appServerTokenEnv,
   }
 }

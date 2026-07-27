@@ -20,7 +20,20 @@ export type DiscordDaemonOptions = {
   model?: string
   proxy?: string
   debug?: boolean
+  /**
+   * Discord user IDs of *bot* accounts that are allowed to trigger commands
+   * (e.g. `!codex`, `!sessions`). Messages from bots are ignored by default to
+   * avoid feedback loops; listing a bot's ID here lets a trusted external bot
+   * drive the bridge. The daemon's own bot account is never added implicitly.
+   */
+  allowBotAuthorIds?: string[]
   runCodex: typeof import('./codex-runner.js').runCodex
+  /**
+   * When set (app-server engine), returns the terminal command that attaches a
+   * TUI to the SAME live Codex thread over `codex --remote`. Undefined in exec
+   * mode, where handoff is the local `cd … && codex resume <id>` form.
+   */
+  remoteAttachCommand?: (codexThreadId: string) => string
 }
 
 type DiscordMessage = {
@@ -775,6 +788,24 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
       .slice(0, 90) || 'codex-session'
   }
 
+  // Parse an optional leading `--cwd <path>` / `--name <thread-name>` off a
+  // `!codex` payload so a fresh session can pick its workdir and thread name.
+  // Flag values may be quoted. Everything after the flags is the Codex prompt.
+  function parseCodexInvocation(raw: string): { cwd?: string; name?: string; prompt: string } {
+    let rest = raw.trim()
+    let cwd: string | undefined
+    let name: string | undefined
+    for (;;) {
+      const m = /^(--cwd|--name)\s+("[^"]+"|'[^']+'|\S+)\s*/.exec(rest)
+      if (!m) break
+      const value = m[2].replace(/^["']|["']$/g, '')
+      if (m[1] === '--cwd') cwd = value
+      else name = value
+      rest = rest.slice(m[0].length)
+    }
+    return { cwd, name, prompt: rest }
+  }
+
   function shellQuote(s: string): string {
     return `'${s.replace(/'/g, `'\\''`)}'`
   }
@@ -787,6 +818,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
     console.error(`  workdir:        ${opts.workdir}`)
     console.error(`  codex binary:   ${opts.codexBin}`)
     console.error(`  sandbox:        ${opts.sandbox}`)
+    if (opts.allowBotAuthorIds?.length) console.error(`  allow bot ids:  ${opts.allowBotAuthorIds.join(', ')}`)
     if (opts.model) console.error(`  model:          ${opts.model}`)
     console.error(`  state dir:      ${opts.stateDir}`)
     console.error(`  session homes:  ${codexSessionHomes().map(shortPath).join(', ')}`)
@@ -1108,6 +1140,14 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
         await sendMessage(discordThreadId, 'No Codex session is bound to this thread yet.')
         return true
       }
+      if (opts.remoteAttachCommand) {
+        const cmd = opts.remoteAttachCommand(binding.codexThreadId)
+        await sendMessage(
+          discordThreadId,
+          `Terminal attach (same live session — speak from either side):\n\n\`\`\`sh\n${cmd}\n\`\`\``,
+        )
+        return true
+      }
       const cmd = `cd ${shellQuote(binding.cwd)} && ${opts.codexBin} resume ${binding.codexThreadId}`
       await sendMessage(
         discordThreadId,
@@ -1180,7 +1220,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
     return false
   }
 
-  async function runCodexForThread(discordThreadId: string, prompt: string, fromQueue = false): Promise<void> {
+  async function runCodexForThread(discordThreadId: string, prompt: string, fromQueue = false, cwdOverride?: string): Promise<void> {
     const existing = activeRuns.get(discordThreadId)
     if (existing) {
       await sendMessage(
@@ -1223,7 +1263,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
         }
         : undefined
       const result = await opts.runCodex({
-        cwd: binding?.cwd ?? opts.workdir,
+        cwd: binding?.cwd ?? cwdOverride ?? opts.workdir,
         codexThreadId: binding?.codexThreadId,
         codexBin: opts.codexBin,
         codexGlobalOptions: [
@@ -1231,6 +1271,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
           ...askMcpConfigOptions(),
         ],
         codexOptions: opts.model ? ['--model', opts.model] : [],
+        sandbox: opts.sandbox,
         env,
         signal: active.abort.signal,
         onEvent: event => {
@@ -1242,13 +1283,19 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
       await upsertBinding(bindingsFile, discordThreadId, {
         codexThreadId: result.codexThreadId,
         codexHome: bindingCodexHome,
-        cwd: binding?.cwd ?? opts.workdir,
+        cwd: binding?.cwd ?? cwdOverride ?? opts.workdir,
         createdAt: new Date().toISOString(),
         updatedAt: new Date().toISOString(),
       })
       managedThreads.add(discordThreadId)
       await editMessage(discordThreadId, workingId, `Codex session: ${result.codexThreadId}\nCompleted in ${elapsedSeconds(active.startedAt)}s.`)
       await sendChunks(discordThreadId, result.finalText)
+      if (opts.remoteAttachCommand && !binding) {
+        await sendMessage(
+          discordThreadId,
+          `Terminal attach (same live session — speak from either side):\n\`\`\`sh\n${opts.remoteAttachCommand(result.codexThreadId)}\n\`\`\``,
+        ).catch(() => {})
+      }
     } catch (err) {
       if (err instanceof CodexRunInterruptedError || active.stopRequested) {
         const finalStatus = `Codex interrupted after ${elapsedSeconds(active.startedAt)}s.${active.stopRequestedAt ? ` Stop completed in ${elapsedSeconds(active.stopRequestedAt)}s after interrupt request.` : ''}`
@@ -1269,7 +1316,10 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
   }
 
   async function handleMessage(msg: DiscordMessage): Promise<void> {
-    if (msg.author.bot) return
+    // Ignore messages from bots to prevent feedback loops, EXCEPT bot accounts
+    // explicitly allow-listed via `allowBotAuthorIds`. This lets a trusted
+    // external bridge (e.g. a Claude Discord session) trigger `!codex`.
+    if (msg.author.bot && !(opts.allowBotAuthorIds ?? []).includes(msg.author.id)) return
 
     if (msg.channel_id === opts.parentChannelId) {
       const content = msg.content.trim()
@@ -1316,12 +1366,19 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
         return
       }
 
-      const prompt = payloadAfterCommand(content, '!codex') ?? ''
+      const invocation = payloadAfterCommand(content, '!codex') ?? ''
+      if (!invocation) return
+      const { cwd: cwdArg, name: nameArg, prompt } = parseCodexInvocation(invocation)
       if (!prompt) return
-      const threadId = await createThread(opts.parentChannelId, threadNameFromPrompt(prompt))
+      const cwdOverride = cwdArg ? normalizeWorkdir(cwdArg) : undefined
+      if (cwdOverride && !existsSync(cwdOverride)) {
+        await sendMessage(opts.parentChannelId, `Cannot start Codex: workdir does not exist: ${cwdOverride}`)
+        return
+      }
+      const threadId = await createThread(opts.parentChannelId, threadNameFromPrompt(nameArg ?? prompt))
       managedThreads.add(threadId)
-      await sendMessage(threadId, `Starting Codex session for:\n${prompt}`)
-      await runCodexForThread(threadId, prompt)
+      await sendMessage(threadId, `Starting Codex session for:\n${prompt}${cwdOverride ? `\n(workdir: ${cwdOverride})` : ''}`)
+      await runCodexForThread(threadId, prompt, false, cwdOverride)
       return
     }
 
