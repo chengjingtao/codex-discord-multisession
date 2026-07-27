@@ -1,20 +1,8 @@
 // Pure formatters for readable Discord rendering (hybrid direction C).
 // The daemon feeds these translated exec-JSON item data; they return Discord
-// message strings / embed objects. No I/O here so they stay unit-testable.
+// message strings. No I/O here so they stay unit-testable.
 
-export type DiscordEmbed = {
-  title?: string
-  description?: string
-  color?: number
-  footer?: { text: string }
-}
-
-export const COLOR = {
-  ok: 0x2ecc71, // green — exit 0
-  err: 0xe74c3c, // red — nonzero / unknown exit
-} as const
-
-const TITLE_MAX = 240
+const CMD_MAX = 200
 const FAIL_MAX_LINES = 12
 const FAIL_MAX_CHARS = 1200
 
@@ -29,6 +17,17 @@ function truncate(text: string, limit: number): string {
 
 function fenceSafe(text: string): string {
   return text.replace(/```/g, '``​`')
+}
+
+// Neutralize backticks so a command is safe inside inline `code`.
+function inlineSafe(text: string): string {
+  return text.replace(/`/g, 'ˋ')
+}
+
+// Strip a `… -lc '<script>'` shell wrapper to show the inner command codex ran.
+function unwrapShell(cmd: string): string {
+  const m = /-l?c\s+'([\s\S]*)'\s*$/.exec(cmd.trim())
+  return m ? m[1] : cmd
 }
 
 export type CommandItem = {
@@ -48,34 +47,27 @@ function capOutput(output: string, maxLines: number, maxChars: number): { shown:
   return { shown, moreLines: Math.max(0, lines.length - kept.length) }
 }
 
-export function commandEmbed(item: CommandItem): DiscordEmbed {
+/**
+ * Render a command execution as a LIGHTWEIGHT line, not a heavy embed, so the
+ * visual focus stays on the agent's prose. Successful commands are a single
+ * muted subtext line (`-# ✅ …`); failures keep the subtext line and expand
+ * the error output (capped) so it's still debuggable.
+ */
+export function commandLine(item: CommandItem): string {
   const ok = item.exit_code === 0
-  const title = `⚡ ${truncate(collapse(item.command) || '(command)', TITLE_MAX)}`
-  const exitText = `exit ${item.exit_code ?? '?'}`
+  const emoji = ok ? '✅' : '❌'
+  const cmd = inlineSafe(truncate(collapse(unwrapShell(item.command)) || '(command)', CMD_MAX))
   const durText = typeof item.duration_ms === 'number' ? ` · ${(item.duration_ms / 1000).toFixed(1)}s` : ''
-
-  // A+B: successful commands show no output (just command + exit); failures
-  // expand the output, capped to a few lines with a "+N 行" marker.
-  let description: string | undefined
-  if (!ok) {
-    const output = item.aggregated_output.trim()
-    if (output) {
-      const { shown, moreLines } = capOutput(output, FAIL_MAX_LINES, FAIL_MAX_CHARS)
-      const marker = moreLines > 0 ? `\n… +${moreLines} 行` : ''
-      description = `\`\`\`text\n${fenceSafe(shown)}${marker}\n\`\`\``
-    }
-  }
-
-  return {
-    title,
-    description,
-    color: ok ? COLOR.ok : COLOR.err,
-    footer: { text: `${exitText}${durText}` },
-  }
+  const head = `-# ${emoji} \`${cmd}\` · exit ${item.exit_code ?? '?'}${durText}`
+  if (ok) return head
+  const output = item.aggregated_output.trim()
+  if (!output) return head
+  const { shown, moreLines } = capOutput(output, FAIL_MAX_LINES, FAIL_MAX_CHARS)
+  const marker = moreLines > 0 ? `\n… +${moreLines} 行` : ''
+  return `${head}\n\`\`\`text\n${fenceSafe(shown)}${marker}\n\`\`\``
 }
 
 export function reasoningSpoiler(text: string): string {
-  // Neutralize internal spoiler bars so they don't break the wrapper.
   const safe = text.replace(/\|\|/g, '|​|').trim()
   return `🧠 ||${safe}||`
 }

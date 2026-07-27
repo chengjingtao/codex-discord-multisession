@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url'
 import { loadBindings, saveBindings, upsertBinding, type Binding } from './bindings.js'
 import { codexSessionHomes, findCodexSessionSummary, listCodexSessions, resolveCodexSessionId, type CodexSessionSummary } from './codex-sessions.js'
 import { CodexRunInterruptedError } from './codex-runner.js'
-import { commandEmbed, reasoningSpoiler, agentProse, runningStatus, completedStatus } from './discord-render.js'
+import { commandLine, reasoningSpoiler, agentProse, runningStatus, completedStatus } from './discord-render.js'
 
 export type DiscordDaemonOptions = {
   token: string
@@ -259,10 +259,6 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
     return String(msg.id)
   }
 
-  async function sendEmbed(channelId: string, embed: unknown): Promise<string> {
-    return sendMessage(channelId, '', { embeds: [embed] })
-  }
-
   async function editMessage(channelId: string, messageId: string, content: string, options: { components?: unknown[] } = {}): Promise<void> {
     const body: RestJson = {
       content,
@@ -382,7 +378,7 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
     if (!item) return false
 
     if (item.type === 'command_execution') {
-      await sendEmbed(discordThreadId, commandEmbed({
+      await sendMessage(discordThreadId, commandLine({
         command: typeof item.command === 'string' ? item.command : '',
         exit_code: typeof item.exit_code === 'number' ? item.exit_code : null,
         aggregated_output: typeof item.aggregated_output === 'string' ? item.aggregated_output : '',
