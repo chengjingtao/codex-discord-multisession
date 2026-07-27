@@ -53,7 +53,13 @@ export function makeAppServerRunner(manager: { client(): AppServerClient }): (op
         const evThreadId = params?.threadId
         if (threadId && typeof evThreadId === 'string' && evThreadId !== threadId) return
         // Surface the live turn id so the daemon can steer mid-turn messages in.
-        if (method === 'turn/started' && typeof params?.turnId === 'string') opts.onTurnId?.(params.turnId)
+        // Capture from ANY notification carrying a turnId (not just turn/started,
+        // whose exact shape/name varies) — they all belong to the active turn.
+        const evTurnId = typeof params?.turnId === 'string' ? params.turnId
+          : typeof params?.turn_id === 'string' ? params.turn_id
+          : typeof params?.turn?.id === 'string' ? params.turn.id
+          : undefined
+        if (evTurnId) opts.onTurnId?.(evTurnId)
         for (const ev of translateNotification(method, params)) {
           events.push(ev)
           if (ev.type === 'thread.started' && typeof (ev as any).thread_id === 'string') codexThreadId = (ev as any).thread_id
