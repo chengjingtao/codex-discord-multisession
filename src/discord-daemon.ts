@@ -1240,10 +1240,12 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
   async function runCodexForThread(discordThreadId: string, prompt: string, fromQueue = false, cwdOverride?: string): Promise<void> {
     const existing = activeRuns.get(discordThreadId)
     if (existing) {
+      // A plain message sent mid-turn is auto-queued (runs after the current
+      // turn) rather than rejected. `!stop` interrupts so it starts now.
+      const position = enqueuePrompt(discordThreadId, prompt)
       await sendMessage(
         discordThreadId,
-        `${formatLiveStatus(existing, 1700)}\n\n` +
-        'Your message was not queued or sent to Codex. Send `!queue <message>` to queue it, or `!stop` to interrupt.',
+        `📥 已排队（第 ${position} 位）— 当前 Codex 轮次完成后自动运行。\`!stop\` 可打断当前轮次让它立即开始。`,
       )
       return
     }
