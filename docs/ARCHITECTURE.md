@@ -110,8 +110,12 @@ fails `thread not found`; the runner then `thread/resume`s it from the on-disk
 rollout and retries once (`src/appserver-runner.ts`).
 
 One live Codex turn per Discord thread at a time. A plain message sent mid-turn
-is **auto-queued** and runs when the current turn finishes (`!stop` interrupts so
-it starts now; `!queue` queues explicitly).
+is **steered into the running turn** (`turn/steer` with the live `expectedTurnId`,
+captured from the `turn/started` notification via `onTurnId`) — applied at the
+turn's next tool call, matching the terminal. Only if the turn is no longer
+steerable does it **fall back to auto-queuing** (runs after the current turn).
+`!queue` explicitly queues a separate next turn; `!stop` interrupts. (Steer is
+app-server-only; exec mode always queues.)
 
 ---
 

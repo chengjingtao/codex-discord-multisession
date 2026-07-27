@@ -147,6 +147,7 @@ async function start(configFile, cliOpts) {
   const config = await resolveStartOptions({ configFile, cliOpts })
   let runner = runCodex
   let remoteAttachCommand
+  let steerTurn
   if (config.engine === 'app-server') {
     const token = config.appServerTokenEnv ? process.env[config.appServerTokenEnv] : undefined
     // Apply sandbox/approval as GLOBAL app-server config so they hold for every
@@ -165,6 +166,20 @@ async function start(configFile, cliOpts) {
     })
     await manager.start()
     runner = makeAppServerRunner(manager)
+    // Steer a mid-turn message into the running turn (matches the terminal).
+    // Returns false if the turn is no longer steerable so the daemon can queue.
+    steerTurn = async (codexThreadId, expectedTurnId, prompt) => {
+      try {
+        await manager.client().request('turn/steer', {
+          threadId: codexThreadId,
+          expectedTurnId,
+          input: [{ type: 'text', text: prompt }],
+        })
+        return true
+      } catch {
+        return false
+      }
+    }
     remoteAttachCommand = codexThreadId =>
       `codex resume ${codexThreadId} --remote ${manager.remoteUrl()}` +
       (config.appServerTokenEnv ? ` --remote-auth-token-env ${config.appServerTokenEnv}` : '')
@@ -184,6 +199,7 @@ async function start(configFile, cliOpts) {
     engine: config.engine,
     runCodex: runner,
     remoteAttachCommand,
+    steerTurn,
   })
 }
 

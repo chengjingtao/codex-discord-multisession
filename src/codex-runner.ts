@@ -13,6 +13,11 @@ export type CodexRunOptions = {
   env?: Record<string, string>
   signal?: AbortSignal
   onEvent?: (event: unknown) => void | Promise<void>
+  /**
+   * Called with the live turn id when a turn starts (app-server engine only).
+   * Lets the daemon `turn/steer` a mid-turn message into the running turn.
+   */
+  onTurnId?: (turnId: string) => void
 }
 
 export type CodexRunResult = {

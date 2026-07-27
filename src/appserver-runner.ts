@@ -52,6 +52,8 @@ export function makeAppServerRunner(manager: { client(): AppServerClient }): (op
         // Filter to this run's thread once known (shared client streams all threads).
         const evThreadId = params?.threadId
         if (threadId && typeof evThreadId === 'string' && evThreadId !== threadId) return
+        // Surface the live turn id so the daemon can steer mid-turn messages in.
+        if (method === 'turn/started' && typeof params?.turnId === 'string') opts.onTurnId?.(params.turnId)
         for (const ev of translateNotification(method, params)) {
           events.push(ev)
           if (ev.type === 'thread.started' && typeof (ev as any).thread_id === 'string') codexThreadId = (ev as any).thread_id

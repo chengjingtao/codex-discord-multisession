@@ -36,6 +36,14 @@ export type DiscordDaemonOptions = {
   engine?: 'exec' | 'app-server'
   runCodex: typeof import('./codex-runner.js').runCodex
   /**
+   * Inject a message into the CURRENTLY running turn (app-server `turn/steer`),
+   * applied at the turn's next tool call — matching the terminal's mid-turn
+   * behaviour. Returns true if the steer was accepted, false if the turn is no
+   * longer steerable (caller then falls back to queuing). Undefined in exec
+   * mode (separate process per message ⇒ no live turn to steer).
+   */
+  steerTurn?: (codexThreadId: string, expectedTurnId: string, prompt: string) => Promise<boolean>
+  /**
    * When set (app-server engine), returns the terminal command that attaches a
    * TUI to the SAME live Codex thread over `codex --remote`. Undefined in exec
    * mode, where handoff is the local `cd … && codex resume <id>` form.
@@ -99,6 +107,9 @@ type ActiveRun = {
   /** Buffered command-execution subtext lines, flushed as one message every few seconds. */
   cmdBatch: string[]
   cmdBatchTimer?: NodeJS.Timeout
+  /** Codex thread id + live turn id, for steering a mid-turn message into this run. */
+  codexThreadId?: string
+  currentTurnId?: string
 }
 
 /** How long command-execution lines accumulate before being flushed as one message. */
@@ -1293,8 +1304,17 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
   async function runCodexForThread(discordThreadId: string, prompt: string, fromQueue = false, cwdOverride?: string): Promise<void> {
     const existing = activeRuns.get(discordThreadId)
     if (existing) {
-      // A plain message sent mid-turn is auto-queued (runs after the current
-      // turn) rather than rejected. `!stop` interrupts so it starts now.
+      // Match the terminal: a plain message sent mid-turn is STEERED into the
+      // running turn (applied at its next tool call), not run as a separate
+      // later turn. Only if the turn is no longer steerable do we fall back to
+      // queuing. `!queue` is the explicit "run as a separate next turn" path.
+      if (opts.steerTurn && existing.codexThreadId && existing.currentTurnId) {
+        const ok = await opts.steerTurn(existing.codexThreadId, existing.currentTurnId, prompt).catch(() => false)
+        if (ok) {
+          await sendMessage(discordThreadId, '✏️ 已插入当前轮次 — Codex 会在下一步工具调用时读到它。')
+          return
+        }
+      }
       const position = enqueuePrompt(discordThreadId, prompt)
       await sendMessage(
         discordThreadId,
@@ -1315,6 +1335,11 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
       cmdBatch: [],
     }
     activeRuns.set(discordThreadId, active)
+    {
+      // Seed the codex thread id (for steering) from the existing binding, if any.
+      const b = await getBinding(discordThreadId)
+      if (b?.codexThreadId) active.codexThreadId = b.codexThreadId
+    }
 
     try {
       const bindings = await loadBindings(bindingsFile)
@@ -1346,7 +1371,12 @@ export async function startDiscordDaemon(opts: DiscordDaemonOptions): Promise<vo
         sandbox: opts.sandbox,
         env,
         signal: active.abort.signal,
+        onTurnId: turnId => { active.currentTurnId = turnId },
         onEvent: event => {
+          // Capture the codex thread id (new threads only learn it mid-run) so a
+          // steered mid-turn message can target the right thread.
+          const ev = event as { type?: string; thread_id?: string }
+          if (ev?.type === 'thread.started' && typeof ev.thread_id === 'string') active.codexThreadId = ev.thread_id
           const note = noteForCodexEvent(event)
           if (note) queueLiveUpdate(discordThreadId, note)
           // Serialize rich per-item renders so Discord messages keep event order.

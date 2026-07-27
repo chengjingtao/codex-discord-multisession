@@ -50,6 +50,18 @@ test('resume existing thread skips start/inject', async () => {
   assert.deepEqual(fake.calls.map(c => c.method), ['turn/start'])
 })
 
+test('onTurnId fires with the live turn id from turn/started (for steering)', async () => {
+  const fake = fakeClient()
+  const run = makeAppServerRunner(fake as any)
+  const turnIds: string[] = []
+  const p = run({ cwd: '/tmp', prompt: 'go', codexThreadId: 'T', onEvent: () => {}, onTurnId: (id: string) => turnIds.push(id) } as any)
+  await new Promise(r => setTimeout(r, 20))
+  fake.emit('turn/started', { threadId: 'T', turnId: 'TURN-1' })
+  fake.emit('turn/completed', { threadId: 'T' })
+  await p
+  assert.deepEqual(turnIds, ['TURN-1'])
+})
+
 test('existing thread not in memory (post-restart): resume from rollout then retry turn/start', async () => {
   const notifyHandlers: Array<(m: string, p: any) => void> = []
   const calls: string[] = []
